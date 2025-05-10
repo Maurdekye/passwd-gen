@@ -155,10 +155,21 @@ fn iterate_all(hir: &Hir, max_length: Option<usize>) -> Box<dyn Iterator<Item = 
                 )
                 .map(|x| x.join(&[][..]))
             };
-            if let Some(max) = repetition.max {
-                Box::new((repetition.min as usize..=max as usize).flat_map(mapper))
-            } else {
-                Box::new((repetition.min as usize..).flat_map(mapper))
+            match (repetition.max, max_length) {
+                (Some(max), Some(max_length)) => Box::new(
+                    (repetition.min as usize..=max as usize)
+                        .flat_map(mapper)
+                        .take_while(move |x| x.len() <= max_length),
+                ),
+                (Some(max), None) => {
+                    Box::new((repetition.min as usize..=max as usize).flat_map(mapper))
+                }
+                (None, Some(max_length)) => Box::new(
+                    (repetition.min as usize..)
+                        .flat_map(mapper)
+                        .take_while(move |x| x.len() <= max_length),
+                ),
+                (None, None) => Box::new((repetition.min as usize..).flat_map(mapper)),
             }
         }
         Capture(capture) => iterate_all(&capture.sub, max_length),
@@ -187,6 +198,13 @@ fn is_unbounded(hir: &Hir) -> bool {
         Concat(hirs) | Alternation(hirs) => hirs.iter().any(|hir| is_unbounded(hir)),
         _ => false,
     }
+}
+
+#[test]
+fn test_unbounded() {
+    let hir = Parser::new().parse("a*b*").unwrap();
+    let patterns: Vec<_> = iterate_all(&hir, Some(5)).collect();
+    assert!(patterns.len() == 25)
 }
 
 /// Regex iterator

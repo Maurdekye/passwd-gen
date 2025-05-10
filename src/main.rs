@@ -38,9 +38,6 @@ where
                 break;
             }
         }
-        if factories.is_empty() {
-            done = true;
-        }
         Self {
             factories,
             iters,
@@ -61,6 +58,10 @@ where
     fn next(&mut self) -> Option<Self::Item> {
         if self.done {
             return None;
+        }
+        if self.factories.is_empty() {
+            self.done = true;
+            return Some(Vec::new());
         }
         let result = self.heads.clone();
         for ((head, iter), factory) in self

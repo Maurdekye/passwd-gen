@@ -149,22 +149,16 @@ fn iterate_all(hir: &Hir, max_length: Option<usize>) -> Box<dyn Iterator<Item = 
             ),
         },
         Repetition(repetition) => {
-            if let Some(max) = repetition.max {
-                Box::new(
-                    (repetition.min as usize..=max as usize).flat_map(move |repeats| {
-                        MultiCartesianProduct::new(
-                            (0..repeats).map(|_| iterate_all(&repetition.sub, max_length)),
-                        )
-                        .map(|x| x.into_iter().flatten().collect())
-                    }),
+            let mapper = move |repeats| {
+                MultiCartesianProduct::new(
+                    (0..repeats).map(|_| iterate_all(&repetition.sub, max_length)),
                 )
+                .map(|x| x.join(&[][..]))
+            };
+            if let Some(max) = repetition.max {
+                Box::new((repetition.min as usize..=max as usize).flat_map(mapper))
             } else {
-                Box::new((repetition.min as usize..).flat_map(move |repeats| {
-                    MultiCartesianProduct::new(
-                        (0..repeats).map(|_| iterate_all(&repetition.sub, max_length)),
-                    )
-                    .map(|x| x.into_iter().flatten().collect())
-                }))
+                Box::new((repetition.min as usize..).flat_map(mapper))
             }
         }
         Capture(capture) => iterate_all(&capture.sub, max_length),

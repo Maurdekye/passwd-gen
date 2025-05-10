@@ -10,71 +10,51 @@ use regex_syntax::{
     hir::{Class::*, Hir, HirKind::*},
 };
 
-struct Memo<I>
+struct MultiCartesianProduct<I, F>
 where
     I: Iterator,
+    F: Fn() -> I,
 {
-    iter: Option<I>,
-    memo: Vec<I::Item>,
-}
-
-impl<I> Memo<I>
-where
-    I: Iterator,
-{
-    fn new(iter: impl IntoIterator<IntoIter = I>) -> Self {
-        Memo {
-            iter: Some(iter.into_iter()),
-            memo: Vec::new(),
-        }
-    }
-
-    fn get(&mut self, index: usize) -> Option<&I::Item> {
-        if let Some(iter) = &mut self.iter {
-            while self.memo.len() <= index {
-                if let Some(item) = iter.next() {
-                    self.memo.push(item);
-                } else {
-                    self.iter = None;
-                    break;
-                }
-            }
-        }
-        self.memo.get(index)
-    }
-}
-
-struct MultiCartesianProduct<I>
-where
-    I: Iterator,
-{
-    iters: Vec<Memo<I>>,
-    indexes: Vec<usize>,
+    factories: Vec<F>,
+    iters: Vec<I>,
+    heads: Vec<I::Item>,
     done: bool,
 }
 
-impl<I> MultiCartesianProduct<I>
+impl<I, F> MultiCartesianProduct<I, F>
 where
     I: Iterator,
+    F: Fn() -> I,
 {
-    fn new<J>(iters: impl IntoIterator<Item = J>) -> Self
-    where
-        J: IntoIterator<IntoIter = I>,
-    {
-        let iters: Vec<Memo<I>> = iters.into_iter().map(Memo::new).collect();
-        let indexes = vec![0; iters.len()];
+    fn new(factories: Vec<F>) -> Self {
+        let mut iters: Vec<I> = factories.iter().map(|f| (f)()).collect();
+        let mut heads = Vec::new();
+        let mut done = false;
+        for iter in &mut iters {
+            if let Some(head) = iter.next() {
+                heads.push(head);
+            } else {
+                done = true;
+                break;
+            }
+        }
+        if factories.is_empty() {
+            done = true;
+        }
         Self {
+            factories,
             iters,
-            indexes,
-            done: false,
+            heads,
+            done,
         }
     }
 }
 
-impl<I> Iterator for MultiCartesianProduct<I>
+impl<I, F> Iterator for MultiCartesianProduct<I, F>
 where
     I: Iterator,
     I::Item: Clone,
+    F: Fn() -> I,
 {
     type Item = Vec<I::Item>;
 
@@ -82,48 +62,42 @@ where
         if self.done {
             return None;
         }
-        if self.iters.is_empty() {
-            self.done = true;
-            return Some(Vec::new());
-        }
-        let new_item = 'outer: loop {
-            let mut new_item = Vec::new();
-            for (i, iter) in self.iters.iter_mut().enumerate() {
-                if let Some(item) = iter.get(self.indexes[i]) {
-                    new_item.push(item.clone());
-                } else {
-                    if self.indexes[i] == 0 {
-                        self.done = true;
-                        return None;
-                    }
-                    if i + 1 == self.indexes.len() {
-                        self.done = true;
-                        return None;
-                    } else {
-                        self.indexes[..=i].fill(0);
-                        self.indexes[i + 1] += 1;
-                    }
-                    continue 'outer;
-                }
+        let result = self.heads.clone();
+        for ((head, iter), factory) in self
+            .heads
+            .iter_mut()
+            .zip(&mut self.iters)
+            .zip(&self.factories)
+        {
+            if let Some(next) = iter.next() {
+                *head = next;
+                return Some(result);
+            } else {
+                *iter = (factory)();
+                *head = iter.next().unwrap();
             }
-            break new_item;
-        };
-        self.indexes[0] += 1;
-
-        Some(new_item)
+        }
+        self.done = true;
+        Some(result)
     }
 }
 
 #[test]
 fn test_cartesian() {
-    for item in MultiCartesianProduct::new([['a', 'b'], ['f', 'g'], ['y', 'z']]) {
+    for item in MultiCartesianProduct::new(vec![
+        || ['a', 'b'].into_iter(),
+        || ['f', 'g'].into_iter(),
+        || ['y', 'z'].into_iter(),
+    ]) {
         println!("{:?}", item);
     }
 }
 
 #[test]
 fn test_cartesian_2() {
-    for item in MultiCartesianProduct::new([['a', 'b', 'c'], ['f', 'g', 'h']]) {
+    for item in MultiCartesianProduct::new(vec![|| ['a', 'b', 'c'].into_iter(), || {
+        ['f', 'g', 'h'].into_iter()
+    }]) {
         println!("{:?}", item);
     }
 }
@@ -151,7 +125,9 @@ fn iterate_all(hir: &Hir, max_length: Option<usize>) -> Box<dyn Iterator<Item = 
         Repetition(repetition) => {
             let mapper = move |repeats| {
                 MultiCartesianProduct::new(
-                    (0..repeats).map(|_| iterate_all(&repetition.sub, max_length)),
+                    (0..repeats)
+                        .map(move |_| move || iterate_all(&repetition.sub, max_length))
+                        .collect(),
                 )
                 .map(|x| x.join(&[][..]))
             };
@@ -174,8 +150,12 @@ fn iterate_all(hir: &Hir, max_length: Option<usize>) -> Box<dyn Iterator<Item = 
         }
         Capture(capture) => iterate_all(&capture.sub, max_length),
         Concat(hirs) => Box::new(
-            MultiCartesianProduct::new(hirs.iter().map(|hir| iterate_all(&hir, max_length)))
-                .map(|x| x.into_iter().flatten().collect()),
+            MultiCartesianProduct::new(
+                hirs.iter()
+                    .map(move |hir| move || iterate_all(&hir, max_length))
+                    .collect(),
+            )
+            .map(|x| x.into_iter().flatten().collect()),
         ),
         Alternation(hirs) => Box::new(
             hirs.iter()
@@ -203,8 +183,19 @@ fn is_unbounded(hir: &Hir) -> bool {
 #[test]
 fn test_unbounded() {
     let hir = Parser::new().parse("a*b*").unwrap();
-    let patterns: Vec<_> = iterate_all(&hir, Some(5)).collect();
-    assert!(patterns.len() == 25)
+    let patterns: Vec<_> = iterate_all(&hir, Some(5))
+        .map(|s| String::from_utf8_lossy(&s).into_owned())
+        .collect();
+    assert_eq!(
+        patterns,
+        [
+            "", "a", "aa", "aaa", "aaaa", "aaaaa", "b", "ab", "aab", "aaab", "aaaab", "bb", "abb",
+            "aabb", "aaabb", "bbb", "abbb", "aabbb", "bbbb", "abbbb", "bbbbb"
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect::<Vec<_>>()
+    )
 }
 
 /// Regex iterator

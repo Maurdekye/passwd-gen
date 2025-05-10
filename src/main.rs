@@ -1,5 +1,3 @@
-#![feature(iterator_try_collect)]
-#![feature(string_from_utf8_lossy_owned)]
 use std::{
     error::Error,
     iter::{empty, once},
@@ -52,7 +50,7 @@ where
 {
     iters: Vec<Memo<I>>,
     indexes: Vec<usize>,
-    is_empty: bool,
+    done: bool,
 }
 
 impl<I> MultiCartesianProduct<I>
@@ -68,7 +66,7 @@ where
         Self {
             iters,
             indexes,
-            is_empty: false,
+            done: false,
         }
     }
 }
@@ -81,13 +79,12 @@ where
     type Item = Vec<I::Item>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        if self.done {
+            return None;
+        }
         if self.iters.is_empty() {
-            return if self.is_empty {
-                None
-            } else {
-                self.is_empty = true;
-                Some(Vec::new())
-            };
+            self.done = true;
+            return Some(Vec::new());
         }
         let new_item = 'outer: loop {
             let mut new_item = Vec::new();
@@ -95,12 +92,15 @@ where
                 if let Some(item) = iter.get(self.indexes[i]) {
                     new_item.push(item.clone());
                 } else {
+                    if self.indexes[i] == 0 {
+                        self.done = true;
+                        return None;
+                    }
                     if i + 1 == self.indexes.len() {
+                        self.done = true;
                         return None;
                     } else {
-                        for j in 0..=i {
-                            self.indexes[j] = 0;
-                        }
+                        self.indexes[..=i].fill(0);
                         self.indexes[i + 1] += 1;
                     }
                     continue 'outer;
@@ -138,7 +138,7 @@ fn iterate_all(hir: &Hir, max_length: Option<usize>) -> Box<dyn Iterator<Item = 
                     .iter()
                     .map(|r| r.start()..=r.end())
                     .flatten()
-                    .map(|c| c.encode_utf8(&mut vec![0; 4]).as_bytes().to_vec()),
+                    .map(|c| c.encode_utf8(&mut [0; 4]).as_bytes().to_vec()),
             ),
             Bytes(class_bytes) => Box::new(
                 class_bytes
@@ -186,6 +186,15 @@ fn iterate_all(hir: &Hir, max_length: Option<usize>) -> Box<dyn Iterator<Item = 
     }
 }
 
+fn is_unbounded(hir: &Hir) -> bool {
+    match hir.kind() {
+        Repetition(repetition) => repetition.max.is_none(),
+        Capture(capture) => is_unbounded(&capture.sub),
+        Concat(hirs) | Alternation(hirs) => hirs.iter().any(|hir| is_unbounded(hir)),
+        _ => false,
+    }
+}
+
 /// Regex iterator
 #[derive(ClapParser)]
 struct Args {
@@ -208,10 +217,14 @@ struct Args {
 fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
     let hir = Parser::new().parse(&args.password_pattern)?;
-    let regexes = iterate_all(&hir, args.max_length);
-    for (i, item) in regexes
+    if is_unbounded(&hir) && args.num.is_none() && args.max_length.is_none() {
+        Err(
+            "Regex contains infinite range: program will spin forever unless a max length or number of results is specified.",
+        )?
+    }
+    for (i, item) in iterate_all(&hir, args.max_length)
         .into_iter()
-        .map(String::from_utf8_lossy_owned)
+        .map(|v| String::from_utf8_lossy(&v).into_owned())
         .filter(|x| x.len() >= args.min_length)
         .enumerate()
     {

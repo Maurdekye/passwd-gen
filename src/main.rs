@@ -130,7 +130,7 @@ fn iterate_all(hir: &Hir, max_length: Option<usize>) -> Box<dyn Iterator<Item = 
                         .map(move |_| move || iterate_all(&repetition.sub, max_length))
                         .collect(),
                 )
-                .map(|x| x.join(&[][..]))
+                .map(|x| x.concat())
             };
             match (repetition.max, max_length) {
                 (Some(max), Some(max_length)) => Box::new(
@@ -156,7 +156,7 @@ fn iterate_all(hir: &Hir, max_length: Option<usize>) -> Box<dyn Iterator<Item = 
                     .map(move |hir| move || iterate_all(&hir, max_length))
                     .collect(),
             )
-            .map(|x| x.into_iter().flatten().collect()),
+            .map(|x| x.concat()),
         ),
         Alternation(hirs) => Box::new(
             hirs.iter()
